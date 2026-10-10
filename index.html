@@ -8,20 +8,20 @@
 <meta name="description" content="Computers, printers, spares and networking gear. Plus expert IT support and cybersecurity consultancy.">
 
 <!-- ===== SOCIAL SHARE PREVIEW =====
-     IMPORTANT: replace https://YOUR-SITE.netlify.app below with your real
-     live web address in BOTH og:url and og:image / twitter:image. -->
+     These point to the GitHub Pages address. If you move to a custom domain,
+     update og:url, og:image and twitter:image. -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Loyalty ICT Solutions">
 <meta property="og:title" content="Loyalty ICT Solutions — Computers, IT Support & Cybersecurity">
 <meta property="og:description" content="Genuine hardware, expert IT support, cybersecurity and AI solutions in Nairobi. Shop online, book a service, pay easily.">
-<meta property="og:image" content="https://YOUR-SITE.netlify.app/og-image.png">
+<meta property="og:image" content="https://kamathiro.github.io/loyalty-ict/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:url" content="https://YOUR-SITE.netlify.app">
+<meta property="og:url" content="https://kamathiro.github.io/loyalty-ict/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Loyalty ICT Solutions — Computers, IT Support & Cybersecurity">
 <meta name="twitter:description" content="Genuine hardware, expert IT support, cybersecurity and AI solutions in Nairobi. Shop online, book a service, pay easily.">
-<meta name="twitter:image" content="https://YOUR-SITE.netlify.app/og-image.png">
+<meta name="twitter:image" content="https://kamathiro.github.io/loyalty-ict/og-image.png">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
@@ -654,17 +654,22 @@ function startProductsStream(){
   }, err=>console.warn('products stream:',err.code));
 }
 // Orders & bookings are staff-only — stream only when a staff/admin is logged in.
+let ordersInit=false,bookingsInit=false;
 function startStaffStreams(){
   if(unsubOrders) return;
   const {fdb,collection,onSnapshot,query,orderBy}=window.FB;
   unsubOrders = onSnapshot(query(collection(fdb,'orders'),orderBy('date','desc')), snap=>{
+    if(ordersInit) snap.docChanges().forEach(ch=>{ if(ch.type==='added'){ const o=ch.doc.data(); notify('New order '+(o.ref||''), (o.name||'Customer')+' · '+money(o.total||0)); if(isAdminUser()){newSignups++;updateBell();} } });
+    ordersInit=true;
     cache.orders = snap.docs.map(d=>({id:d.id,...d.data()})); if(adminOpen()) renderAdmin();
   }, err=>console.warn('orders stream:',err.code));
   unsubBookings = onSnapshot(query(collection(fdb,'bookings'),orderBy('created','desc')), snap=>{
+    if(bookingsInit) snap.docChanges().forEach(ch=>{ if(ch.type==='added'){ const b=ch.doc.data(); notify('New service request', (b.name||'Customer')+' · '+(b.service||'')); if(isAdminUser()){newSignups++;updateBell();} } });
+    bookingsInit=true;
     cache.bookings = snap.docs.map(d=>({id:d.id,...d.data()})); if(adminOpen()) renderAdmin();
   }, err=>console.warn('bookings stream:',err.code));
 }
-function stopStaffStreams(){ if(unsubOrders){unsubOrders();unsubOrders=null;} if(unsubBookings){unsubBookings();unsubBookings=null;} cache.orders=[]; cache.bookings=[]; }
+function stopStaffStreams(){ if(unsubOrders){unsubOrders();unsubOrders=null;} if(unsubBookings){unsubBookings();unsubBookings=null;} cache.orders=[]; cache.bookings=[]; ordersInit=false; bookingsInit=false; }
 
 // Firestore write helpers
 async function fbAdd(col,data){ const {fdb,addDoc,collection}=window.FB; return (await addDoc(collection(fdb,col),data)).id; }
@@ -1488,21 +1493,69 @@ function renderTab(){
 }
 
 /* ----- dashboard ----- */
+function waLink(phone,msg){ let n=String(phone||'').replace(/\D/g,''); if(n.startsWith('0'))n='254'+n.slice(1); else if(n.length===9)n='254'+n; return 'https://wa.me/'+n+'?text='+encodeURIComponent(msg||''); }
+function exportCSV(kind){
+  const O=DB.get('orders',[]),B=DB.get('bookings',[]),P=DB.get('products',[]);
+  const sets={
+    orders:[['Ref','Customer','Phone','Total','Status','Date','Items'],O.map(o=>[o.ref,o.name,o.phone,o.total,o.status,new Date(o.date).toLocaleString('en-KE'),(o.items||[]).map(i=>i.qty+'x '+i.name).join('; ')])],
+    bookings:[['Ref','Customer','Phone','Service','Preferred date','Status'],B.map(b=>[b.ref,b.name,b.phone,b.service,b.date||'',b.status])],
+    products:[['Name','Category','Price','Stock'],P.map(p=>[p.name,p.cat,p.price,p.stock])]
+  };
+  const [head,rows]=sets[kind];
+  const esc=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+  const csv='\ufeff'+[head,...rows].map(r=>r.map(esc).join(',')).join('\n');
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='loyalty-'+kind+'-'+new Date().toISOString().slice(0,10)+'.csv'; a.click();
+  logAction('Exported '+kind,rows.length+' rows');
+}
+async function quickStock(id){
+  const el=document.getElementById('qs-'+id), v=el?Number(el.value):NaN;
+  if(isNaN(v)||v<0||el.value===''){ toast('Enter a valid stock number','bad'); return; }
+  const p=DB.get('products',[]).find(x=>x.id===id);
+  try{ await fbUpdate('products',id,{stock:v}); logAction('Restocked product',(p?p.name:id)+' → '+v); toast('Stock updated','ok'); }
+  catch(e){ toast('Failed: '+e.code,'bad'); }
+}
 function dashHtml(){
   const orders=DB.get('orders',[]),bookings=DB.get('bookings',[]),products=DB.get('products',[]);
-  const revenue=orders.filter(o=>o.status!=='rejected').reduce((s,o)=>s+o.total,0);
+  const good=orders.filter(o=>o.status!=='rejected');
+  const revenue=good.reduce((s,o)=>s+o.total,0);
   const pendingO=orders.filter(o=>o.status==='pending').length;
   const pendingB=bookings.filter(b=>b.status==='pending').length;
-  const lowStock=products.filter(p=>p.stock<5).length;
+  const low=products.filter(p=>p.stock<5).sort((a,b)=>a.stock-b.stock);
+  const days=[...Array(7)].map((_,i)=>{const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-(6-i));return d;});
+  const sums=days.map(d=>good.filter(o=>new Date(o.date).toDateString()===d.toDateString()).reduce((s,o)=>s+o.total,0));
+  const max=Math.max(...sums,1), week=sums.reduce((a,b)=>a+b,0);
+  const bars=sums.map((v,i)=>{const h=Math.round(v/max*100),x=i*62+10;return `<rect x="${x}" y="${120-h}" width="42" height="${h}" rx="6" fill="${v?'#2563EB':'#E2E8F0'}"/><text x="${x+21}" y="138" text-anchor="middle" font-size="11" fill="#64748B">${days[i].toLocaleDateString('en-KE',{weekday:'short'})}</text>${v?`<text x="${x+21}" y="${114-h}" text-anchor="middle" font-size="10" fill="#1E293B">${v>=1000?Math.round(v/1000)+'k':v}</text>`:''}`;}).join('');
+  const tally={}; good.forEach(o=>(o.items||[]).forEach(i=>{tally[i.name]=(tally[i.name]||0)+(i.qty||1);}));
+  const top=Object.entries(tally).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const wa='<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z"/></svg>';
+  const grid='display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;margin-top:16px';
   return `<div class="stat-grid">
     <div class="stat"><div class="s-lab">Total Revenue</div><div class="s-val">${money(revenue)}</div><div class="s-sub">${orders.length} orders</div></div>
     <div class="stat"><div class="s-lab">Pending Orders</div><div class="s-val">${pendingO}</div><div class="s-sub">need approval</div></div>
     <div class="stat"><div class="s-lab">Service Requests</div><div class="s-val">${pendingB}</div><div class="s-sub">awaiting response</div></div>
-    <div class="stat"><div class="s-lab">Products</div><div class="s-val">${products.length}</div><div class="s-sub">${lowStock} low on stock</div></div>
+    <div class="stat"><div class="s-lab">Products</div><div class="s-val">${products.length}</div><div class="s-sub">${low.length} low on stock</div></div>
   </div>
-  <div class="panel"><div class="panel-head"><h3>Recent orders</h3></div>
-  <div class="table-wrap"><table><thead><tr><th>Ref</th><th>Customer</th><th>Total</th><th>Status</th><th>Date</th></tr></thead><tbody>
-  ${orders.slice(0,5).map(o=>`<tr><td><b>${o.ref}</b></td><td>${o.name}</td><td>${money(o.total)}</td><td><span class="badge b-${o.status}">${o.status}</span></td><td>${new Date(o.date).toLocaleDateString('en-KE')}</td></tr>`).join('')||'<tr><td colspan="5" style="color:var(--muted)">No orders yet.</td></tr>'}
+  <div style="${grid}">
+    <div class="panel"><div class="panel-head"><h3>Revenue · last 7 days</h3><span style="font-weight:700;color:var(--brand)">${money(week)}</span></div>
+      <div style="padding:14px 16px"><svg viewBox="0 0 434 145" style="width:100%;height:auto">${bars}</svg></div></div>
+    <div class="panel"><div class="panel-head"><h3>Top sellers</h3></div><div style="padding:6px 18px 14px">
+      ${top.map(([n,q],i)=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px"><span><b style="color:var(--muted)">${i+1}.</b> ${n}</span><b>${q} sold</b></div>`).join('')||'<div style="color:var(--muted);padding:14px 0;font-size:14px">Sales will rank here once orders come in.</div>'}
+    </div></div>
+  </div>
+  <div style="${grid}">
+    ${can('products')?`<div class="panel"><div class="panel-head"><h3>Low stock</h3><span class="badge b-pending">${low.length}</span></div><div style="padding:6px 18px 14px">
+      ${low.slice(0,6).map(p=>`<div style="display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13.5px"><span style="flex:1"><b>${p.name}</b><br><span style="color:var(--muted);font-size:12px">${p.stock} left</span></span><input id="qs-${p.id}" type="number" min="0" placeholder="New qty" style="width:84px;padding:7px 8px;border:1px solid var(--line);border-radius:7px;font-family:inherit"><button class="mini mini-ok" onclick="quickStock('${p.id}')">Save</button></div>`).join('')||'<div style="color:var(--ok);padding:14px 0;font-size:14px;font-weight:600">All products are well stocked.</div>'}
+      ${low.length>6?`<div style="color:var(--muted);font-size:12.5px;padding-top:10px">+${low.length-6} more in the Products tab</div>`:''}
+    </div></div>`:''}
+    <div class="panel"><div class="panel-head"><h3>Service requests</h3></div><div style="padding:6px 18px 14px">
+      ${bookings.slice(0,5).map(b=>`<div style="display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13.5px"><span style="flex:1"><b>${b.name}</b><br><span style="color:var(--muted);font-size:12px">${b.service}</span></span><span class="badge b-${b.status}">${b.status}</span><a class="mini mini-view" target="_blank" href="${waLink(b.phone,'Hello '+b.name+', this is Loyalty ICT Solutions about your '+b.service+' request.')}">${wa}</a></div>`).join('')||'<div style="color:var(--muted);padding:14px 0;font-size:14px">No service requests yet.</div>'}
+    </div></div>
+  </div>
+  <div class="panel" style="margin-top:16px"><div class="panel-head"><h3>Recent orders</h3>
+    <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="mini mini-view" onclick="exportCSV('orders')">Export orders</button><button class="mini mini-view" onclick="exportCSV('bookings')">Export requests</button><button class="mini mini-view" onclick="exportCSV('products')">Export products</button></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Ref</th><th>Customer</th><th>Total</th><th>Status</th><th>Date</th><th>Contact</th></tr></thead><tbody>
+  ${orders.slice(0,5).map(o=>`<tr><td><b>${o.ref}</b></td><td>${o.name}</td><td>${money(o.total)}</td><td><span class="badge b-${o.status}">${o.status}</span></td><td>${new Date(o.date).toLocaleDateString('en-KE')}</td><td><a class="mini mini-view" target="_blank" href="${waLink(o.phone,'Hello '+o.name+', this is Loyalty ICT Solutions about your order '+o.ref+'.')}">${wa} WhatsApp</a></td></tr>`).join('')||'<tr><td colspan="6" style="color:var(--muted)">No orders yet.</td></tr>'}
   </tbody></table></div></div>`;
 }
 
