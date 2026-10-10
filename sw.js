@@ -1,7 +1,7 @@
 /* Loyalty ICT Solutions — service worker
-   Caches the app shell so it loads fast and works offline,
-   which also makes the app installable on phones. */
-const CACHE = 'loyalty-v1';
+   Network-first for our own files, so a new deploy shows up right away.
+   Falls back to the cache when offline, which keeps the app installable. */
+const CACHE = 'loyalty-v2';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -16,14 +16,15 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  // Leave Firebase, fonts and other outside requests alone
+  if (new URL(e.request.url).origin !== self.location.origin) return;
   e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
-      // cache same-origin GETs as we go
-      if (res.ok && e.request.url.startsWith(self.location.origin)) {
+    fetch(e.request).then(res => {
+      if (res.ok) {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy));
       }
       return res;
-    }).catch(() => cached))
+    }).catch(() => caches.match(e.request))
   );
 });
